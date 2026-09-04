@@ -1,6 +1,10 @@
 // Subagent session reactivation helper.
 // Replaces completed subagent run records when a user steers the child session.
-import { getLatestSubagentRunByChildSessionKey } from "../agents/subagents/registry/subagent-registry-read.js";
+import {
+  getLatestLiveSubagentRunByChildSessionKey,
+  getLatestSubagentRunByChildSessionKey,
+} from "../agents/subagents/registry/subagent-registry-read.js";
+import { terminateAcceptedCollectorRun } from "../agents/subagents/spawn/subagent-spawn-cleanup.js";
 import type { GatewayContextResolver } from "./server-methods/types.js";
 
 // Completed subagent sessions can be reactivated after a user steer by replacing
@@ -42,14 +46,35 @@ export async function reactivateCompletedSubagentSession(params: {
   }
   const task = params.task;
   const hasTask = typeof task === "string" && task.trim().length > 0;
-  return replaceSubagentRunAfterSteer({
-    previousRunId: existing.runId,
-    nextRunId: runId,
-    fallback: existing,
-    runTimeoutSeconds: existing.runTimeoutSeconds ?? 0,
-    ...(hasTask ? { task } : {}),
-    ...(params.gatewayContextResolver
-      ? { gatewayContextResolver: params.gatewayContextResolver }
-      : {}),
-  });
+  try {
+    const replaced = await replaceSubagentRunAfterSteer({
+      previousRunId: existing.runId,
+      nextRunId: runId,
+      fallback: existing,
+      runTimeoutSeconds: existing.runTimeoutSeconds ?? 0,
+      persistenceFailure: "throw",
+      ...(hasTask ? { task } : {}),
+      ...(params.gatewayContextResolver
+        ? { gatewayContextResolver: params.gatewayContextResolver }
+        : {}),
+    });
+    if (replaced) {
+      return true;
+    }
+    const currentOwner = getLatestLiveSubagentRunByChildSessionKey(params.sessionKey);
+    if (currentOwner?.runId === runId) {
+      return true;
+    }
+    await terminateAcceptedCollectorRun({
+      childSessionKey: params.sessionKey,
+      gatewayRunId: runId,
+    });
+    return false;
+  } catch (error) {
+    await terminateAcceptedCollectorRun({
+      childSessionKey: params.sessionKey,
+      gatewayRunId: runId,
+    });
+    throw error;
+  }
 }
