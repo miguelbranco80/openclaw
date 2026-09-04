@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import * as sqliteTransaction from "../../infra/sqlite-transaction.js";
+import * as nodeSqlite from "../../infra/node-sqlite.js";
 import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
 import { onSessionIdentityMutation } from "../../sessions/session-lifecycle-events.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
@@ -76,23 +76,28 @@ describe("SQLite reclamation admission races", () => {
     closeOpenClawAgentDatabasesForTest();
   });
 
-  it("publishes the committed deletion after a recovered commit barrier failure", async () => {
+  it("publishes the committed deletion after a recovered commit connection close failure", async () => {
     const sessionKey = "agent:main:recovered-deletion";
     const sessionId = "recovered-deletion";
     await replaceSessionEntry({ sessionKey, storePath }, { sessionId, updatedAt: 1 });
     await replaceTranscriptEvents({ sessionKey, sessionId, storePath }, [
       { type: "session", id: sessionId, content: "archive the committed deletion" },
     ]);
-    const actualTransaction = sqliteTransaction.runSqliteImmediateTransactionSync;
+    const actualOpen = nodeSqlite.openNodeSqliteDatabase;
     let faultInjected = false;
     archiveMaterializationHook.beforeCommitRequest = () => {
-      vi.spyOn(sqliteTransaction, "runSqliteImmediateTransactionSync").mockImplementationOnce(
-        (db, operation, options) => {
-          actualTransaction(db, operation, options);
+      // A fast Worker can settle before the optional barrier transaction runs.
+      // Its dedicated connection always closes, so the fault cannot leak to publication.
+      vi.spyOn(nodeSqlite, "openNodeSqliteDatabase").mockImplementationOnce((...args) => {
+        const database = actualOpen(...args);
+        const close = database.close.bind(database);
+        vi.spyOn(database, "close").mockImplementationOnce(() => {
+          close();
           faultInjected = true;
-          throw new Error("injected failure after barrier acquired");
-        },
-      );
+          throw new Error("injected failure after barrier connection closed");
+        });
+        return database;
+      });
     };
     const mutations: string[] = [];
     const unsubscribe = onSessionIdentityMutation((event) => {
