@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
+import { createServer, type Socket } from "node:net";
 import path from "node:path";
 import { promisify } from "node:util";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
@@ -11,7 +12,7 @@ import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "../../extensions/lobster/index.js";
 import type { createRuntimeTasks } from "../../src/plugins/runtime/runtime-tasks.js";
-import { waitForFixtureFile } from "../helpers/process-wait.js";
+import { reserveTestPortListener } from "../../src/test-utils/port-claims.js";
 
 type RuntimeTasks = ReturnType<typeof createRuntimeTasks>;
 type BoundTaskFlow = ReturnType<RuntimeTasks["async"]["managedFlows"]["bindSession"]> &
@@ -32,8 +33,11 @@ const responseSchema = {
 
 let fixtureDir: string;
 let closeStateDatabase: (() => Promise<void>) | undefined;
+let cleanupChildFixture: (() => Promise<void>) | undefined;
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   afterEach(async () => {
+    await cleanupChildFixture?.();
+    cleanupChildFixture = undefined;
     await closeStateDatabase?.();
     closeStateDatabase = undefined;
     vi.resetModules();
@@ -213,10 +217,44 @@ beforeEach(async () => {
 });
 
 describe("managed Lobster structured input", () => {
-  it.each(["run", "resume"] as const)(
-    "stops embedded workflow effects when %s is aborted",
-    async (action) => {
+  it.for([
+    { action: "run", cancel: true },
+    { action: "resume", cancel: true },
+    { action: "run", cancel: false },
+  ] as const)(
+    "settles a real $action child (cancel=$cancel)",
+    async ({ action, cancel }, context) => {
       const taskFlow = await bindFreshRuntime();
+      const ready = createDeferred<Socket>();
+      const closed = createDeferred<void>();
+      const peers = new Set<Socket>();
+      const controller = new AbortController();
+      const executions: Promise<ToolResult>[] = [];
+      const listener = await reserveTestPortListener({
+        offsets: [0],
+        signal: context.signal,
+        createListener: () =>
+          createServer((socket) => {
+            peers.add(socket);
+            socket.once("close", () => closed.resolve());
+            socket.once("error", (error) => ready.reject(error));
+            socket.once("data", () => ready.resolve(socket));
+          }),
+      });
+      // Join the child before afterEach closes its database and removes its files,
+      // including when this test times out or fails before requesting cancellation.
+      cleanupChildFixture = async () => {
+        controller.abort();
+        for (const socket of peers) {
+          socket.destroy();
+        }
+        await Promise.allSettled(executions);
+        try {
+          await listener.releaseListener();
+        } finally {
+          await listener.claim.release();
+        }
+      };
       const filePath = path.join(fixtureDir, "abort.lobster");
       const effectsPath = path.join(fixtureDir, "abort-effects.log");
       const scriptPath = path.join(fixtureDir, "slow-step.cjs");
@@ -224,12 +262,19 @@ describe("managed Lobster structured input", () => {
         scriptPath,
         [
           "const fs = require('node:fs');",
-          "fs.writeFileSync(process.env.EFFECTS + '.tmp', 'started\\n');",
-          "fs.renameSync(process.env.EFFECTS + '.tmp', process.env.EFFECTS);",
-          "setTimeout(() => {",
+          "const net = require('node:net');",
+          "const socket = net.connect(Number(process.env.PORT), '127.0.0.1');",
+          "socket.on('connect', () => {",
+          "  fs.writeFileSync(process.env.EFFECTS, 'started\\n');",
+          "  socket.write('R');",
+          "});",
+          "socket.once('data', () => {",
           "  fs.appendFileSync(process.env.EFFECTS, 'finished\\n');",
           "  process.stdout.write('{}');",
-          "}, 2000);",
+          "  socket.end();",
+          "});",
+          "socket.on('end', () => socket.destroy());",
+          "socket.on('error', () => { process.exitCode = 1; socket.destroy(); });",
         ].join("\n"),
       );
       await fs.writeFile(
@@ -247,12 +292,11 @@ describe("managed Lobster structured input", () => {
             {
               id: "slow",
               run: `"${process.execPath}" "${scriptPath}"`,
-              env: { EFFECTS: effectsPath },
+              env: { EFFECTS: effectsPath, PORT: String(listener.claim.port) },
             },
           ],
         }),
       );
-      const controller = new AbortController();
       const tool = createTool(taskFlow);
       const first =
         action === "resume"
@@ -266,23 +310,37 @@ describe("managed Lobster structured input", () => {
             responseJson: "true",
           }
         : runParams(filePath);
-      const pending = tool.execute("abort-probe", args, controller.signal);
-      try {
-        await waitForFixtureFile(effectsPath, pending, "started\n");
-        expect(await fs.readFile(effectsPath, "utf8")).toBe("started\n");
+      const pending = tool.execute(
+        "abort-probe",
+        args,
+        AbortSignal.any([controller.signal, context.signal]),
+      );
+      executions.push(pending);
+      const socket = await Promise.race([
+        ready.promise,
+        pending.then(() => {
+          throw new Error("Workflow settled before the child was ready");
+        }),
+      ]);
+      expect(await fs.readFile(effectsPath, "utf8")).toBe("started\n");
+      // The child cannot finish while this worker is descheduled. Only this test
+      // can release its effect; cancellation must instead close the child's socket.
+      if (cancel) {
         controller.abort(new Error("caller stopped the tool"));
-        const result = await pending;
+      } else {
+        socket.write("F");
+      }
+      const result = await pending;
+      await closed.promise;
+      context.signal.throwIfAborted();
+      if (cancel) {
         expect(result).toMatchObject({ isError: true });
+        expect(result.details).toMatchObject({ error: { message: "caller stopped the tool" } });
         expect(flowResult(result).flow.status).toBe("failed");
-        // Wait beyond the fixture's effect deadline: an error response alone does
-        // not prove that the subprocess stopped producing effects.
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, 2200);
-        });
         expect(await fs.readFile(effectsPath, "utf8")).toBe("started\n");
-      } finally {
-        controller.abort();
-        await Promise.allSettled([pending]);
+      } else {
+        expect(flowResult(result).flow.status).toBe("succeeded");
+        expect(await fs.readFile(effectsPath, "utf8")).toBe("started\nfinished\n");
       }
     },
   );
