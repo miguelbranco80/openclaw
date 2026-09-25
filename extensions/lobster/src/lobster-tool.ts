@@ -200,14 +200,10 @@ function parseManagedFlowParams(
 }
 
 function resolveManagedFlowToolResult(result: ManagedLobsterFlowResult, maxStdoutBytes: number) {
-  const payload = result.ok
-    ? { ...result.envelope, flow: result.flow, mutation: result.mutation }
-    : {
-        ok: false,
-        error: { message: result.error.message },
-        ...(result.flow ? { flow: result.flow } : {}),
-        ...(result.mutation ? { mutation: result.mutation } : {}),
-      };
+  if (!result.ok) {
+    throw result.error;
+  }
+  const payload = { ...result.envelope, flow: result.flow, mutation: result.mutation };
   if (
     Buffer.byteLength(JSON.stringify(payload, null, 2), "utf8") > Math.max(1024, maxStdoutBytes)
   ) {
@@ -216,22 +212,18 @@ function resolveManagedFlowToolResult(result: ManagedLobsterFlowResult, maxStdou
         ok: false,
         error: {
           message:
-            "TaskFlow result exceeds maxStdoutBytes. Use status with the flowId and a larger maxStdoutBytes to inspect the saved state; do not replay the workflow.",
+            "TaskFlow result exceeds maxStdoutBytes. For a saved question, use status with the flowId and a larger maxStdoutBytes. Otherwise inspect state with openclaw tasks flow show <flowId>; do not replay the workflow.",
         },
-        ...(result.flow
-          ? {
-              flow: {
-                flowId: result.flow.flowId,
-                revision: result.flow.revision,
-                status: result.flow.status,
-              },
-            }
-          : {}),
+        flow: {
+          flowId: result.flow.flowId,
+          revision: result.flow.revision,
+          status: result.flow.status,
+        },
       }),
       isError: true,
     };
   }
-  return { ...jsonResult(payload), ...(!result.ok ? { isError: true } : {}) };
+  return jsonResult(payload);
 }
 
 function requireTaskFlowRuntime(

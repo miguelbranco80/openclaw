@@ -209,8 +209,8 @@ export async function inspectManagedLobsterFlows(
 ) {
   if (flowId) {
     const flow = await taskFlow.get(flowId);
-    if (!flow || flow.syncMode !== "managed") {
-      throw new Error("Managed TaskFlow not found in this session");
+    if (!flow || flow.syncMode !== "managed" || !readWaitState(flow.waitJson)) {
+      throw new Error("Saved Lobster checkpoint not found in this session");
     }
     // Arbitrary caller state is not needed to answer a saved question and can
     // dwarf it. Keep the checkpoint and its current revision discoverable.

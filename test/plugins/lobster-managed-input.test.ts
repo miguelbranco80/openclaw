@@ -114,15 +114,7 @@ function flowResult(result: ToolResult) {
 }
 
 async function expectRejected(operation: Promise<ToolResult>) {
-  const outcome = await operation.then(
-    (result) => ({ kind: "result" as const, result }),
-    (error: unknown) => ({ kind: "error" as const, error }),
-  );
-  if (outcome.kind === "error") {
-    expect(outcome.error).toBeInstanceOf(Error);
-  } else {
-    expect(outcome.result).toMatchObject({ isError: true });
-  }
+  await expect(operation).rejects.toBeInstanceOf(Error);
 }
 
 async function writeWorkflow(
@@ -330,22 +322,24 @@ describe("managed Lobster structured input", () => {
       } else {
         socket.write("F");
       }
-      const result = await pending;
+      if (cancel) {
+        await expect(pending).rejects.toThrow("caller stopped the tool");
+      } else {
+        expect(flowResult(await pending).flow.status).toBe("succeeded");
+      }
       await closed.promise;
       context.signal.throwIfAborted();
       if (cancel) {
-        expect(result).toMatchObject({ isError: true });
-        expect(result.details).toMatchObject({ error: { message: "caller stopped the tool" } });
-        expect(flowResult(result).flow.status).toBe("failed");
+        expect(await taskFlow.list()).toEqual([expect.objectContaining({ status: "failed" })]);
         expect(await fs.readFile(effectsPath, "utf8")).toBe("started\n");
       } else {
-        expect(flowResult(result).flow.status).toBe("succeeded");
+        expect(await taskFlow.list()).toEqual([expect.objectContaining({ status: "succeeded" })]);
         expect(await fs.readFile(effectsPath, "utf8")).toBe("started\nfinished\n");
       }
     },
   );
 
-  it("rediscovers a durable wait after reopening state and resumes without a context token", async () => {
+  it("rediscovers a durable wait after reopening state and corrects an invalid answer without replay", async () => {
     const { filePath, effectsPath } = await writeWorkflow();
     const taskFlow = await bindFreshRuntime();
     const first = flowResult(await createTool(taskFlow).execute("start", runParams(filePath)));
@@ -400,11 +394,27 @@ describe("managed Lobster structured input", () => {
       }),
     ]);
 
-    const finished = flowResult(
-      await newTool.execute("answer", {
+    await expectRejected(
+      newTool.execute("invalid-answer", {
         action: "resume",
         flowId: status.flowId,
         flowExpectedRevision: status.revision,
+        responseJson: JSON.stringify({ decision: 42 }),
+      }),
+    );
+    const retry = flowResult(
+      await newTool.execute("inspect-wait", { action: "status", flowId: first.flowId }),
+    );
+    expect(retry.flow.status).toBe("waiting");
+    expect(retry.flow.waitJson).toEqual(first.flow.waitJson);
+    expect(retry.revision).toBeGreaterThan(first.revision);
+    expect(await fs.readFile(effectsPath, "utf8")).toBe("draft\n");
+
+    const finished = flowResult(
+      await createTool(await bindFreshRuntime()).execute("correct-answer", {
+        action: "resume",
+        flowId: retry.flowId,
+        flowExpectedRevision: retry.revision,
         responseJson: JSON.stringify({ decision: "publish" }),
       }),
     );
@@ -424,37 +434,6 @@ describe("managed Lobster structured input", () => {
     expect(await fs.readFile(effectsPath, "utf8")).toBe("draft\nfinish\n");
   });
 
-  it("keeps a schema-invalid answer correctable at the new revision without rerunning earlier work", async () => {
-    const { filePath, effectsPath } = await writeWorkflow();
-    const taskFlow = await bindFreshRuntime();
-    const tool = createTool(taskFlow);
-    const first = flowResult(await tool.execute("start", runParams(filePath)));
-    const invalid = await tool.execute("invalid-answer", {
-      action: "resume",
-      flowId: first.flowId,
-      flowExpectedRevision: first.revision,
-      responseJson: JSON.stringify({ decision: 42 }),
-    });
-    expect(invalid).toMatchObject({ isError: true });
-    const retry = flowResult(invalid);
-    expect(retry.details.ok).toBe(false);
-    expect(retry.flow.status).toBe("waiting");
-    expect(retry.flow.waitJson).toEqual(first.flow.waitJson);
-    expect(retry.revision).toBeGreaterThan(first.revision);
-    expect(await fs.readFile(effectsPath, "utf8")).toBe("draft\n");
-
-    const corrected = flowResult(
-      await createTool(await bindFreshRuntime()).execute("correct-answer", {
-        action: "resume",
-        flowId: retry.flowId,
-        flowExpectedRevision: retry.revision,
-        responseJson: JSON.stringify({ decision: "revise" }),
-      }),
-    );
-    expect(corrected.flow.status).toBe("succeeded");
-    expect(await fs.readFile(effectsPath, "utf8")).toBe("draft\nfinish\n");
-  });
-
   it("recovers an inline input wait after an invalid answer and resumes its remaining pipeline", async () => {
     const taskFlow = await bindFreshRuntime();
     const tool = createTool(taskFlow);
@@ -468,14 +447,17 @@ describe("managed Lobster structured input", () => {
     );
     expect(first.details.status).toBe("needs_input");
     expect(first.flow.waitJson).toMatchObject({ kind: "lobster_input", responseSchema });
-    const invalid = await tool.execute("invalid-inline-answer", {
-      action: "resume",
-      flowId: first.flowId,
-      flowExpectedRevision: first.revision,
-      responseJson: JSON.stringify({ decision: 42 }),
-    });
-    expect(invalid).toMatchObject({ isError: true });
-    const retry = flowResult(invalid);
+    await expectRejected(
+      tool.execute("invalid-inline-answer", {
+        action: "resume",
+        flowId: first.flowId,
+        flowExpectedRevision: first.revision,
+        responseJson: JSON.stringify({ decision: 42 }),
+      }),
+    );
+    const retry = flowResult(
+      await tool.execute("inspect-inline-wait", { action: "status", flowId: first.flowId }),
+    );
     expect(retry.flow.status).toBe("waiting");
     expect(retry.flow.waitJson).toEqual(first.flow.waitJson);
     expect(retry.revision).toBeGreaterThan(first.revision);
@@ -546,12 +528,13 @@ describe("managed Lobster structured input", () => {
       responseJson: JSON.stringify({ decision: "publish" }),
     };
     const winner = tool.execute("first-answer", answer);
-    await paused.entered.promise;
     try {
+      await Promise.race([paused.entered.promise, winner]);
       await expectRejected(createTool(taskFlow).execute("concurrent-answer", answer));
       expect(await fs.readFile(effectsPath, "utf8")).toBe("draft\n");
     } finally {
       paused.release.resolve();
+      await Promise.allSettled([winner]);
     }
     expect(flowResult(await winner).flow.status).toBe("succeeded");
     expect(await fs.readFile(effectsPath, "utf8")).toBe("draft\nfinish\n");
@@ -582,9 +565,9 @@ describe("managed Lobster structured input", () => {
       flowExpectedRevision: first.revision + 1,
       responseJson: JSON.stringify({ decision: "publish" }),
     });
-    await entered.promise;
     let successor: Awaited<ReturnType<BoundTaskFlow["get"]>>;
     try {
+      await Promise.race([entered.promise, pending]);
       const updated = await taskFlow.setWaiting({
         flowId: first.flowId,
         expectedRevision: first.revision,
@@ -603,6 +586,7 @@ describe("managed Lobster structured input", () => {
       successor = updated.flow;
     } finally {
       release.resolve();
+      await Promise.allSettled([pending]);
     }
     await expectRejected(Promise.resolve(pending));
     expect(await taskFlow.get(first.flowId)).toEqual(successor);
@@ -625,9 +609,9 @@ describe("managed Lobster structured input", () => {
         flowExpectedRevision: first.revision,
         responseJson: JSON.stringify({ decision: "publish" }),
       });
-      await paused.entered.promise;
       let successor: Awaited<ReturnType<BoundTaskFlow["get"]>>;
       try {
+        await Promise.race([paused.entered.promise, pending]);
         const claimed = await taskFlow.get(first.flowId);
         expect(claimed?.status).toBe("running");
         expect(claimed?.revision).toBe(first.revision + 1);
@@ -659,18 +643,16 @@ describe("managed Lobster structured input", () => {
         }
       } finally {
         paused.release.resolve();
+        await Promise.allSettled([pending]);
       }
 
-      const result = await pending;
-      expect(result).toMatchObject({ isError: true });
+      await expectRejected(Promise.resolve(pending));
       expect(await fs.readFile(effectsPath, "utf8")).toBe("draft\n");
       if (advanceRevision) {
         expect(await taskFlow.get(first.flowId)).toEqual(successor);
         expect(successor?.status).toBe("running");
       } else {
-        const cancelled = flowResult(result);
-        expect(cancelled.flow.status).toBe("cancelled");
-        expect(await taskFlow.get(first.flowId)).toEqual(cancelled.flow);
+        expect(await taskFlow.get(first.flowId)).toMatchObject({ status: "cancelled" });
       }
     },
   );
@@ -777,21 +759,22 @@ describe("managed Lobster structured input", () => {
     const taskFlow = await bindFreshRuntime();
     const tool = createTool(taskFlow);
     const first = flowResult(await tool.execute("start", runParams(filePath)));
-    const failed = await tool.execute("answer", {
-      action: "resume",
-      flowId: first.flowId,
-      flowExpectedRevision: first.revision,
-      responseJson: JSON.stringify({ decision: "publish" }),
-    });
-    expect(failed).toMatchObject({ isError: true });
-    const current = flowResult(failed);
-    expect(current.flow.status).toBe("failed");
-    expect(current.flow.waitJson).toBeNull();
+    await expectRejected(
+      tool.execute("answer", {
+        action: "resume",
+        flowId: first.flowId,
+        flowExpectedRevision: first.revision,
+        responseJson: JSON.stringify({ decision: "publish" }),
+      }),
+    );
+    const current = await taskFlow.get(first.flowId);
+    expect(current?.status).toBe("failed");
+    expect(current?.waitJson).toBeNull();
     await expectRejected(
       createTool(await bindFreshRuntime()).execute("retry", {
         action: "resume",
-        flowId: current.flowId,
-        flowExpectedRevision: current.revision,
+        flowId: first.flowId,
+        flowExpectedRevision: current?.revision,
         responseJson: JSON.stringify({ decision: "publish" }),
       }),
     );
@@ -861,7 +844,7 @@ describe("managed Lobster structured input", () => {
     },
   );
 
-  it("paginates all pending inputs without exposing another session's waits", async () => {
+  it("paginates pending inputs without exposing unrelated flows or another session's waits", async () => {
     const taskFlow = await bindFreshRuntime();
     const createdAt = Date.now();
     const flows = await Promise.all(
@@ -882,7 +865,24 @@ describe("managed Lobster structured input", () => {
       ),
     );
     const ids = flows.map((flow) => flow.flowId);
+    const unrelated = await taskFlow.createManaged({
+      controllerId: "tests/webhooks",
+      goal: "Unrelated managed wait",
+      status: "waiting",
+      waitJson: { kind: "external_event", topic: "synthetic-private-topic" },
+    });
+    const completed = await taskFlow.createManaged({
+      controllerId: "tests/lobster-input",
+      goal: "Completed review",
+      status: "succeeded",
+      endedAt: createdAt,
+    });
     const tool = createTool(taskFlow);
+    for (const flow of [unrelated, completed]) {
+      await expect(
+        tool.execute("unrelated-detail", { action: "status", flowId: flow.flowId }),
+      ).rejects.toThrow(/not found/i);
+    }
     const first = requireRecord(
       (await tool.execute("first-page", { action: "status" })).details,
       "first pending page",

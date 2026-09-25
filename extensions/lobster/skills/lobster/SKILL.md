@@ -84,16 +84,20 @@ and the actual answer. For an approval wait, send `approve: true` or
 `cancel: true` instead. Send exactly one decision. The adapter retrieves the
 saved checkpoint; do not copy tokens from old conversation context.
 
-After a schema validation error, inspect the returned wait and new revision,
+After a schema validation error, call `status` for the saved wait and new revision,
 clarify the answer if needed, and submit the correction with that revision.
 After a revision conflict, inspect the current question and state; do not blindly
 retry the same answer against a newer checkpoint. After interruption, timeout,
 or an uncertain execution failure, inspect state and effects before doing more
-work. Do not automatically restart or replay the workflow.
+work. Lobster `status` only reads saved Lobster checkpoints; it does not inspect
+other plugins' flows or running/terminal records without a wait. Those require
+Task Flow inspection (`openclaw tasks flow show <flowId>`) by an authorized
+operator. Do not automatically restart or replay the workflow.
 
-If a managed reply exceeds `maxStdoutBytes`, use its flow ID to inspect saved
-state with `status` and a larger `maxStdoutBytes`. An oversized question is still
-saved as a wait; do not run the workflow again just to obtain the question.
+If a managed reply exceeds `maxStdoutBytes`, a waiting flow's question is still
+saved. Use its flow ID with `status` and a larger `maxStdoutBytes` to read it.
+For a terminal flow, use Task Flow inspection instead; completed output is not
+a saved question. Do not run the workflow again just to obtain a larger reply.
 
 For an **ordinary** approval, resume with the returned `requiresApproval.resumeToken`
 as `token` (or its `approvalId`) and the user's `approve` decision. Structured

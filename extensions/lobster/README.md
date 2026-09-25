@@ -84,28 +84,15 @@ Notes:
 
 ## Managed input waits
 
-The plugin includes a discoverable [Lobster skill](skills/lobster/SKILL.md) for
-choosing ordinary or managed execution, presenting review questions, and
-recovering pending work. It does not require a separate workspace skill.
-
-Use `flowControllerId` and `flowGoal` on `run` to save approval or structured
-input checkpoints in the existing session-owned Task Flow record. The Lobster
-runtime still owns execution and response-schema validation.
-
-- `status` lists pending Lobster flows in the current session; `status` with
-  `flowId` returns the saved question and current revision.
-- Resume with `flowId`, `flowExpectedRevision`, and exactly one of `responseJson`
-  (input), `approve` (approval), or `cancel: true`. The adapter retrieves the
-  saved checkpoint and working directory; no token copy is needed.
-- Waiting state has no seven-day expiry. Existing terminal-flow cleanup remains
-  unchanged. Retain both the OpenClaw database and Lobster checkpoint files.
-- This is not an Inbox/form UI or a reviewer-assignment system. Existing Task
-  Flow session ownership applies. Ambiguous in-flight failures are not retried
-  automatically, and cancellation cannot undo completed effects.
+The included [Lobster skill](skills/lobster/SKILL.md) guides agents to save and
+recover review questions through session-owned Task Flow records. Start with
+`flowControllerId` and `flowGoal`, then use `status` and resume by flow ID and
+revision instead of copying tokens from chat. Structured input requires this
+managed mode; ordinary token-based approvals remain supported.
 
 See [managed Task Flow mode](https://docs.openclaw.ai/tools/lobster#managed-task-flow-mode)
-for examples and limits. Ordinary token-based approvals remain supported;
-structured input requires managed mode from the initial run.
+for examples, retention and execution limits. This does not add an Inbox/form UI,
+reviewer assignment, or automatic recovery after uncertain execution.
 
 ## Docs
 

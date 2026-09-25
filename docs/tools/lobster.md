@@ -410,6 +410,10 @@ The list contains up to 20 summaries. If `nextOffset` is returned, pass it as
 { "action": "status", "flowId": "<flowId>" }
 ```
 
+Detail lookup requires a saved Lobster checkpoint; it does not expose other
+plugins' managed flows. Running and terminal flows have no saved wait. Inspect
+those through [Task Flow inspection](/cli/tasks#flow), not Lobster `status`.
+
 Then answer using the revision just read:
 
 ```json
@@ -428,8 +432,8 @@ instead of `responseJson`. To cancel an input wait, send `cancel: true` instead.
 Send exactly one decision. If a token or approval ID is supplied, it must match
 the saved checkpoint.
 
-A schema-invalid answer leaves the flow waiting at a new revision. Read the
-returned flow or call `status`, then submit the corrected answer. Stale managed,
+A schema-invalid answer leaves the flow waiting at a new revision. After the
+tool error, call `status`, then submit the corrected answer. Stale managed,
 concurrent, cancelled, and terminal resumes are rejected before dispatch.
 
 #### Ownership, retention, and execution limits
@@ -454,14 +458,16 @@ concurrent, cancelled, and terminal resumes are rejected before dispatch.
   Managed runs and resumes persist complete checkpoints before limiting the
   tool reply. If the reply is too large, it returns an error with the flow ID,
   revision, and status so the saved question can be retrieved without replaying
-  earlier steps. This does not bypass stdout/stderr limits while steps execute.
+  earlier steps. Completed output is not a saved question: use Task Flow
+  inspection for terminal state, not Lobster `status`. This does not bypass
+  stdout/stderr limits while steps execute.
 - Revision checks prevent duplicate managed dispatch and revalidate after
   asynchronous runner preparation. They do not make workflow effects and
   SQLite writes atomic. A crash after claiming a resume can leave a flow
   `running`, even if dispatch had not yet started. There is no durable dispatch
-  receipt to distinguish that case from effects that ran before a crash. Inspect
-  the flow by ID and reconcile effects manually; this adapter does not
-  automatically reclaim or replay a claimed flow. Timeouts and runtime failures
+  receipt to distinguish that case from effects that ran before a crash. Use
+  `openclaw tasks flow show <flowId>` and reconcile effects manually; this adapter
+  does not automatically reclaim or replay a claimed flow. Timeouts and runtime failures
   can also leave effects uncertain. Cancellation cannot undo effects or
   guarantee immediate interruption of already-running steps.
 - Ordinary token-based approval mode is unchanged. Structured input requires

@@ -89,6 +89,11 @@ describe("runManagedLobsterFlow", () => {
       flowId: "flow-1",
       expectedRevision: 1,
     });
+    expect(await taskFlow.get("flow-1")).toMatchObject({
+      status: "succeeded",
+      waitJson: null,
+      endedAt: expect.any(Number),
+    });
   });
 
   it("serializes cyclic and supported approval items before waiting", async () => {
@@ -479,6 +484,11 @@ describe("resumeManagedLobsterFlow", () => {
         resumeToken: "resume-2",
         cwd: process.cwd(),
       },
+    });
+    expect(await taskFlow.get("flow-1")).toMatchObject({
+      status: "waiting",
+      currentStep: "await_lobster_approval",
+      waitJson: { prompt: "Approve this too?", resumeToken: "resume-2" },
     });
   });
 });

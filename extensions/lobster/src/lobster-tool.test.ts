@@ -641,19 +641,43 @@ describe("lobster plugin tool", () => {
     const taskFlow = createFakeTaskFlow({ tryCreateManaged: vi.fn().mockResolvedValue(null) });
     const runner = { run: vi.fn<lobsterRunner.LobsterRunner["run"]>() };
     const tool = createLobsterTool(fakeApi(), { runner, taskFlow });
-    expect(
-      await tool.execute("failed-create", {
+    await expect(
+      tool.execute("failed-create", {
         action: "run",
         pipeline: "noop",
         flowControllerId: "tests/lobster",
         flowGoal: "Synthetic flow",
       }),
-    ).toMatchObject({
-      isError: true,
-      details: { ok: false, error: { message: "TaskFlow persistence failed." } },
-    });
+    ).rejects.toThrow("TaskFlow persistence failed.");
     expect(runner.run).not.toHaveBeenCalled();
   });
+
+  it.each(["run", "resume"] as const)(
+    "preserves the original managed %s failure after persisting failure state",
+    async (action) => {
+      const failure = new Error("Synthetic runtime failure");
+      const runner = {
+        run: vi.fn<lobsterRunner.LobsterRunner["run"]>().mockRejectedValue(failure),
+      };
+      const taskFlow = createFakeTaskFlow();
+      const tool = createLobsterTool(fakeApi(), { runner, taskFlow });
+
+      await expect(
+        tool.execute("managed-failure", {
+          action,
+          ...(action === "run"
+            ? { pipeline: "noop", flowControllerId: "tests/lobster", flowGoal: "Synthetic flow" }
+            : { flowId: "flow-1", flowExpectedRevision: 4, approve: true }),
+        }),
+      ).rejects.toBe(failure);
+      expect(runner.run).toHaveBeenCalledTimes(1);
+      expect(taskFlow.fail).toHaveBeenCalledWith({
+        flowId: "flow-1",
+        expectedRevision: action === "run" ? 1 : 5,
+      });
+      expect(await taskFlow.get("flow-1")).toMatchObject({ status: "failed" });
+    },
+  );
 
   it("preserves explicit empty flow state in managed TaskFlow run mode", async () => {
     const runner = {
@@ -690,6 +714,38 @@ describe("lobster plugin tool", () => {
       maxStdoutBytes: 512_000,
       beforeExecute: expect.any(Function),
     });
+  });
+
+  it("keeps oversized completed results bounded without suggesting a checkpoint replay", async () => {
+    const runner = {
+      run: vi.fn().mockResolvedValue({
+        ok: true,
+        status: "ok",
+        output: ["x".repeat(2048)],
+        requiresApproval: null,
+      }),
+    };
+    const taskFlow = createFakeTaskFlow();
+    const result = await createLobsterTool(fakeApi(), { runner, taskFlow }).execute(
+      "large-result",
+      {
+        action: "run",
+        pipeline: "noop",
+        flowControllerId: "tests/lobster",
+        flowGoal: "Synthetic flow",
+        maxStdoutBytes: 1024,
+      },
+    );
+    expect(result).toMatchObject({
+      isError: true,
+      details: {
+        flow: { flowId: "flow-1", status: "succeeded", revision: 2 },
+        error: { message: expect.stringContaining("openclaw tasks flow show <flowId>") },
+      },
+    });
+    expect(Buffer.byteLength(JSON.stringify(result.details), "utf8")).toBeLessThan(1024);
+    expect(runner.run).toHaveBeenCalledTimes(1);
+    expect(taskFlow.finish).toHaveBeenCalledTimes(1);
   });
 
   it("rejects managed TaskFlow params when no bound taskFlow runtime is available", async () => {
@@ -760,18 +816,14 @@ describe("lobster plugin tool", () => {
       flowExpectedRevision: saved.revision,
     };
     const stranger = createLobsterTool(fakeApi(), { runner, taskFlow: bind("agent:main:other") });
-    expect(await stranger.execute("wrong-owner", input)).toMatchObject({
-      isError: true,
-      details: { error: { message: expect.stringContaining("No pending Lobster checkpoint") } },
-    });
+    await expect(stranger.execute("wrong-owner", input)).rejects.toThrow(
+      "No pending Lobster checkpoint",
+    );
 
     const recovered = createLobsterTool(fakeApi(), { runner, taskFlow: bind(sessionKey) });
-    expect(
-      await recovered.execute("wrong-checkpoint", { ...input, token: "another-checkpoint" }),
-    ).toMatchObject({
-      isError: true,
-      details: { error: { message: expect.stringContaining("does not match") } },
-    });
+    await expect(
+      recovered.execute("wrong-checkpoint", { ...input, token: "another-checkpoint" }),
+    ).rejects.toThrow("does not match");
     expect(runner.run).toHaveBeenCalledTimes(1);
     const resumed = await recovered.execute("recover", input);
     expect(runner.run).toHaveBeenLastCalledWith(
@@ -788,10 +840,9 @@ describe("lobster plugin tool", () => {
       },
     ]);
     expect(runner.run).toHaveBeenCalledTimes(2);
-    expect(await recovered.execute("replay", input)).toMatchObject({
-      isError: true,
-      details: { error: { message: expect.stringContaining("No pending Lobster checkpoint") } },
-    });
+    await expect(recovered.execute("replay", input)).rejects.toThrow(
+      "No pending Lobster checkpoint",
+    );
     expect(runner.run).toHaveBeenCalledTimes(2);
   });
 

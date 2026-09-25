@@ -31,11 +31,30 @@ export function createFakeTaskFlow(
       approvalId: "approval-1",
     },
   };
-  const mutate = (input: { expectedRevision: number }, status: typeof current.status) => {
+  const mutate = (
+    input: Pick<
+      Parameters<BoundTaskFlow["setWaiting"]>[0],
+      "expectedRevision" | "currentStep" | "waitJson"
+    >,
+    status: typeof current.status,
+  ) => {
     if (input.expectedRevision !== current.revision) {
       return { applied: false as const, code: "revision_conflict" as const };
     }
-    current = { ...current, revision: input.expectedRevision + 1, status };
+    // Match the checkpoint lifecycle: only a waiting flow retains its question.
+    current = {
+      ...current,
+      revision: input.expectedRevision + 1,
+      status,
+      ...(input.currentStep !== undefined ? { currentStep: input.currentStep ?? undefined } : {}),
+      waitJson:
+        status === "waiting"
+          ? input.waitJson === undefined
+            ? current.waitJson
+            : input.waitJson
+          : null,
+      endedAt: status === "succeeded" || status === "failed" ? Date.now() : undefined,
+    };
     return { applied: true as const, flow: current };
   };
 

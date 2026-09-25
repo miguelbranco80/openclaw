@@ -607,13 +607,18 @@ describe("createEmbeddedLobsterRunner", () => {
       timeoutMs: 2000,
       maxStdoutBytes: 4096,
     });
-    expect(beforeExecute).not.toHaveBeenCalled();
-    claimActive = false;
-    const rejected = expect(result).rejects.toThrow("Flow claim was cancelled");
-    loaded.resolve(runtime);
-    await rejected;
-    expect(beforeExecute).toHaveBeenCalledOnce();
-    expect(runtime.resumeToolRequest).not.toHaveBeenCalled();
+    try {
+      expect(beforeExecute).not.toHaveBeenCalled();
+      claimActive = false;
+      loaded.resolve(runtime);
+      await expect(result).rejects.toThrow("Flow claim was cancelled");
+      expect(beforeExecute).toHaveBeenCalledOnce();
+      expect(runtime.resumeToolRequest).not.toHaveBeenCalled();
+    } finally {
+      claimActive = false;
+      loaded.resolve(runtime);
+      await Promise.allSettled([result]);
+    }
   });
 
   it.each(["inline", "workflow", "resume"])(
@@ -645,15 +650,20 @@ describe("createEmbeddedLobsterRunner", () => {
           await claim.promise;
         },
       });
-      const rejected = expect(result).rejects.toThrow("Caller cancelled while reading claim");
-      await entered.promise;
-      expect(runtime.runToolRequest).not.toHaveBeenCalled();
-      expect(runtime.resumeToolRequest).not.toHaveBeenCalled();
-      controller.abort(new Error("Caller cancelled while reading claim"));
-      claim.resolve();
-      await rejected;
-      expect(runtime.runToolRequest).not.toHaveBeenCalled();
-      expect(runtime.resumeToolRequest).not.toHaveBeenCalled();
+      try {
+        await Promise.race([entered.promise, result]);
+        expect(runtime.runToolRequest).not.toHaveBeenCalled();
+        expect(runtime.resumeToolRequest).not.toHaveBeenCalled();
+        controller.abort(new Error("Caller cancelled while reading claim"));
+        claim.resolve();
+        await expect(result).rejects.toThrow("Caller cancelled while reading claim");
+        expect(runtime.runToolRequest).not.toHaveBeenCalled();
+        expect(runtime.resumeToolRequest).not.toHaveBeenCalled();
+      } finally {
+        controller.abort();
+        claim.resolve();
+        await Promise.allSettled([result]);
+      }
     },
   );
 
