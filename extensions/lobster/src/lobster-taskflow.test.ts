@@ -231,6 +231,24 @@ describe("runManagedLobsterFlow", () => {
               },
             },
       );
+      const params = createResumeFlowParams(taskFlow, runner);
+      if (errorType === "parse_error") {
+        await taskFlow.setWaiting({
+          flowId: "flow-1",
+          expectedRevision: 4,
+          waitJson: {
+            kind: "lobster_input",
+            prompt: "Answer?",
+            responseSchema: { type: "boolean" },
+            resumeToken: "resume-1",
+            cwd: process.cwd(),
+          },
+        });
+        vi.mocked(taskFlow.setWaiting).mockClear();
+        params.expectedRevision = 5;
+        delete params.runnerParams.approve;
+        params.runnerParams.response = null;
+      }
       vi.mocked(taskFlow[method]).mockImplementation(async () => {
         const claimed = await taskFlow.get("flow-1");
         if (!claimed) {
@@ -251,9 +269,7 @@ describe("runManagedLobsterFlow", () => {
         return { applied: false, code: "revision_conflict" };
       });
 
-      const result = expectManagedFlowFailure(
-        await resumeManagedLobsterFlow(createResumeFlowParams(taskFlow, runner)),
-      );
+      const result = expectManagedFlowFailure(await resumeManagedLobsterFlow(params));
 
       expect(result.error.message).toContain(
         errorType ? "Synthetic runtime error" : "do not replay the workflow",
@@ -386,37 +402,69 @@ describe("resumeManagedLobsterFlow", () => {
   });
 
   it.each([
-    { type: "parse_error", message: "Response does not match the saved schema", waiting: true },
-    { type: "parse_error", message: 'Approval ID "deadbeef" not found or expired', waiting: true },
-    { type: "runtime_error", message: "Execution failed after dispatch", waiting: false },
-  ])("preserves the dependency error and settles $type safely: $message", async (failure) => {
-    const taskFlow = createFakeTaskFlow();
-    const saved = await taskFlow.get("flow-1");
-    const runner = createRunner({
-      ok: false,
-      error: { type: failure.type, message: failure.message },
-    });
-
-    const result = expectManagedFlowFailure(
-      await resumeManagedLobsterFlow(createResumeFlowParams(taskFlow, runner)),
-    );
-
-    expect(result.error.message).toBe(failure.message);
-    expect(result.flow?.status).toBe(failure.waiting ? "waiting" : "failed");
-    expect(runner.run).toHaveBeenCalledOnce();
-    if (failure.waiting) {
-      expect(taskFlow.setWaiting).toHaveBeenCalledWith({
-        flowId: "flow-1",
-        expectedRevision: 5,
-        currentStep: saved?.currentStep,
-        waitJson: saved?.waitJson,
+    { input: true, cancel: false, type: "parse_error", waiting: true },
+    { input: true, cancel: false, type: "runtime_error", waiting: false },
+    { input: true, cancel: true, type: "parse_error", waiting: false },
+    { input: false, cancel: false, type: "parse_error", waiting: false },
+    { input: false, cancel: false, type: "runtime_error", waiting: false },
+  ])(
+    "settles $type for input=$input cancel=$cancel without classifying message text",
+    async (failure) => {
+      const taskFlow = createFakeTaskFlow();
+      if (failure.input) {
+        await taskFlow.setWaiting({
+          flowId: "flow-1",
+          expectedRevision: 4,
+          waitJson: {
+            kind: "lobster_input",
+            prompt: "Answer?",
+            responseSchema: { type: "boolean" },
+            resumeToken: "resume-1",
+            cwd: process.cwd(),
+          },
+        });
+        vi.mocked(taskFlow.setWaiting).mockClear();
+      }
+      const saved = await taskFlow.get("flow-1");
+      const message = "Synthetic dependency failure";
+      const runner = createRunner({
+        ok: false,
+        error: { type: failure.type, message },
       });
-      expect(taskFlow.fail).not.toHaveBeenCalled();
-    } else {
-      expect(taskFlow.fail).toHaveBeenCalledWith({ flowId: "flow-1", expectedRevision: 5 });
-      expect(taskFlow.setWaiting).not.toHaveBeenCalled();
-    }
-  });
+      const params = createResumeFlowParams(taskFlow, runner);
+      params.expectedRevision = failure.input ? 5 : 4;
+      if (failure.input) {
+        delete params.runnerParams.approve;
+        if (failure.cancel) {
+          params.runnerParams.cancel = true;
+        } else {
+          params.runnerParams.response = null;
+        }
+      }
+
+      const result = expectManagedFlowFailure(await resumeManagedLobsterFlow(params));
+
+      expect(result.error.message).toBe(message);
+      expect(result.flow?.status).toBe(failure.waiting ? "waiting" : "failed");
+      expect(runner.run).toHaveBeenCalledOnce();
+      if (failure.waiting) {
+        expect(taskFlow.setWaiting).toHaveBeenCalledWith({
+          flowId: "flow-1",
+          expectedRevision: params.expectedRevision + 1,
+          currentStep: saved?.currentStep,
+          waitJson: saved?.waitJson,
+        });
+        expect(taskFlow.fail).not.toHaveBeenCalled();
+      } else {
+        expect(taskFlow.fail).toHaveBeenCalledWith({
+          flowId: "flow-1",
+          expectedRevision: params.expectedRevision + 1,
+        });
+        expect(taskFlow.setWaiting).not.toHaveBeenCalled();
+        expect(result.flow?.waitJson).toBeNull();
+      }
+    },
+  );
 
   it("returns a mutation error when taskFlow resume is rejected", async () => {
     const taskFlow = createFakeTaskFlow({

@@ -435,6 +435,9 @@ the saved checkpoint.
 A schema-invalid answer leaves the flow waiting at a new revision. After the
 tool error, call `status`, then submit the corrected answer. Stale managed,
 concurrent, cancelled, and terminal resumes are rejected before dispatch.
+An unavailable approval checkpoint, a malformed input token, or missing runtime
+state fails the managed flow rather than returning it to the pending list. Inspect
+the failure through Task Flow; retrying an answer cannot recreate a lost checkpoint.
 
 #### Ownership, retention, and execution limits
 

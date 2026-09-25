@@ -209,6 +209,75 @@ beforeEach(async () => {
 });
 
 describe("managed Lobster structured input", () => {
+  it.each(["approval-id", "missing-input", "malformed-input"])(
+    "fails an unavailable %s checkpoint instead of advertising it again",
+    async (checkpoint) => {
+      const taskFlow = await bindFreshRuntime();
+      const tool = createTool(taskFlow);
+      const approval = checkpoint === "approval-id";
+      const first = flowResult(
+        await tool.execute(
+          "start-unavailable",
+          runParams(
+            approval
+              ? "approve --prompt 'Review?'"
+              : `ask --prompt 'Review?' --schema '${JSON.stringify(responseSchema)}' | pick decision`,
+          ),
+        ),
+      );
+      let revision = first.revision;
+      if (approval || checkpoint === "malformed-input") {
+        const wait = requireRecord(first.flow.waitJson, "saved checkpoint");
+        if (approval && typeof wait.approvalId !== "string") {
+          throw new Error("Expected a real Lobster approval ID");
+        }
+        const changed = await taskFlow.setWaiting({
+          flowId: first.flowId,
+          expectedRevision: revision,
+          waitJson: approval
+            ? {
+                kind: "lobster_approval",
+                prompt: "Review?",
+                items: [],
+                approvalId: String(wait.approvalId),
+              }
+            : {
+                kind: "lobster_input",
+                prompt: "Review?",
+                responseSchema,
+                resumeToken: "invalid-token",
+                cwd: path.resolve("extensions/lobster"),
+              },
+        });
+        if (!changed.applied) {
+          throw new Error("Expected to replace the saved checkpoint fixture");
+        }
+        revision = changed.flow.revision;
+      }
+      // Lose only this fixture's Lobster state; OpenClaw's saved wait survives.
+      await fs.rm(path.join(fixtureDir, "lobster"), { recursive: true, force: true });
+      await expect(
+        tool.execute("resume-unavailable", {
+          action: "resume",
+          flowId: first.flowId,
+          flowExpectedRevision: revision,
+          ...(approval ? { approve: true } : { responseJson: '{"decision":"publish"}' }),
+        }),
+      ).rejects.toThrow(approval ? /not found or expired/ : /not found|Invalid token/);
+      expect(await taskFlow.get(first.flowId)).toMatchObject({
+        status: "failed",
+        waitJson: null,
+      });
+      const recovered = createTool(await bindFreshRuntime());
+      expect((await recovered.execute("pending", { action: "status" })).details).toMatchObject({
+        flows: [],
+      });
+      await expect(
+        recovered.execute("unavailable-detail", { action: "status", flowId: first.flowId }),
+      ).rejects.toThrow(/not found/);
+    },
+  );
+
   it.for([
     { action: "run", cancel: true },
     { action: "resume", cancel: true },

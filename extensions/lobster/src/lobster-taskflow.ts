@@ -349,17 +349,19 @@ async function executeManagedLobsterFlow(
       if (cancelled) {
         return cancelled;
       }
-      // The pinned runtime reports parse_error before executing resumed work.
-      // Preserve the wait so an invalid answer can be corrected; this does not
-      // prove the dependency's checkpoint still exists. Runtime errors/timeouts
-      // may follow side effects and must not reopen the checkpoint.
+      // Only restore saved input waits for rejected answers. Approval lookup and cancellation
+      // parse errors are not answer validation; do not advertise those waits
+      // again. The runner rejects malformed response tokens before dispatch.
       await assertFlowClaim(params.taskFlow, flow);
       const flowMutation = {
         flowId: flow.flowId,
         expectedRevision: flow.revision,
       };
       const mutation =
-        previousWait && err instanceof LobsterRunnerError && err.type === "parse_error"
+        previousWait?.wait.kind === "lobster_input" &&
+        params.runnerParams.response !== undefined &&
+        err instanceof LobsterRunnerError &&
+        err.type === "parse_error"
           ? await params.taskFlow.setWaiting({
               ...flowMutation,
               currentStep: previousWait.currentStep,

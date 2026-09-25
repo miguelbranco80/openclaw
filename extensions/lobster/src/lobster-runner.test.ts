@@ -365,6 +365,7 @@ describe("createEmbeddedLobsterRunner", () => {
     { label: "cancellation", decision: { cancel: true }, expected: { cancel: true } },
   ])("routes $label resume through the embedded runtime", async ({ decision, expected }) => {
     const runtime = {
+      decodeResumeToken: vi.fn(),
       runToolRequest: vi.fn(),
       resumeToolRequest: vi.fn().mockResolvedValue({
         ok: true,
@@ -389,6 +390,7 @@ describe("createEmbeddedLobsterRunner", () => {
     });
 
     expect(runtime.resumeToolRequest).toHaveBeenCalledOnce();
+    expect(runtime.decodeResumeToken).toHaveBeenCalledTimes("response" in decision ? 1 : 0);
     const request = requireRecord(
       requireFirstCallParam(runtime.resumeToolRequest.mock.calls, "resume tool request"),
       "resume tool request",
@@ -402,6 +404,39 @@ describe("createEmbeddedLobsterRunner", () => {
       requiresApproval: null,
     });
   });
+
+  it.each([undefined, "approval-id"])(
+    "validates the response token only when it is used (approvalId=%s)",
+    async (approvalId) => {
+      const failure = new Error("Invalid token");
+      const runtime = {
+        decodeResumeToken: vi.fn(() => {
+          throw failure;
+        }),
+        runToolRequest: vi.fn(),
+        resumeToolRequest: vi.fn().mockResolvedValue({ ok: true, status: "ok", output: [] }),
+      };
+      const runner = createEmbeddedLobsterRunner({ loadRuntime: async () => runtime });
+      const result = runner.run({
+        action: "resume",
+        token: "invalid-token",
+        approvalId,
+        response: false,
+        cwd: process.cwd(),
+        timeoutMs: 2000,
+        maxStdoutBytes: 4096,
+      });
+      if (approvalId) {
+        await expect(result).resolves.toMatchObject({ ok: true });
+        expect(runtime.decodeResumeToken).not.toHaveBeenCalled();
+        expect(runtime.resumeToolRequest).toHaveBeenCalledOnce();
+      } else {
+        await expect(result).rejects.toBe(failure);
+        expect(runtime.decodeResumeToken).toHaveBeenCalledExactlyOnceWith("invalid-token");
+        expect(runtime.resumeToolRequest).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it("forwards approvalId through resume when token is absent", async () => {
     const runtime = {
@@ -589,7 +624,11 @@ describe("createEmbeddedLobsterRunner", () => {
   });
 
   it("rechecks the managed claim after runtime loading before dispatch", async () => {
-    const runtime = { runToolRequest: vi.fn(), resumeToolRequest: vi.fn() };
+    const runtime = {
+      decodeResumeToken: vi.fn(),
+      runToolRequest: vi.fn(),
+      resumeToolRequest: vi.fn(),
+    };
     const loaded = createDeferred<typeof runtime>();
     const runner = createEmbeddedLobsterRunner({ loadRuntime: () => loaded.promise });
     let claimActive = true;
@@ -624,7 +663,11 @@ describe("createEmbeddedLobsterRunner", () => {
   it.each(["inline", "workflow", "resume"])(
     "awaits the managed claim before an embedded %s request and honors cancellation while waiting",
     async (requestKind) => {
-      const runtime = { runToolRequest: vi.fn(), resumeToolRequest: vi.fn() };
+      const runtime = {
+        decodeResumeToken: vi.fn(),
+        runToolRequest: vi.fn(),
+        resumeToolRequest: vi.fn(),
+      };
       const runner = createEmbeddedLobsterRunner({ loadRuntime: async () => runtime });
       const entered = createDeferred<void>();
       const claim = createDeferred<void>();
@@ -668,7 +711,11 @@ describe("createEmbeddedLobsterRunner", () => {
   );
 
   it("refuses dispatch when an asynchronous managed claim rejects", async () => {
-    const runtime = { runToolRequest: vi.fn(), resumeToolRequest: vi.fn() };
+    const runtime = {
+      decodeResumeToken: vi.fn(),
+      runToolRequest: vi.fn(),
+      resumeToolRequest: vi.fn(),
+    };
     const runner = createEmbeddedLobsterRunner({ loadRuntime: async () => runtime });
     await expect(
       runner.run({

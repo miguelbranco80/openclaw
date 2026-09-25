@@ -86,6 +86,8 @@ saved checkpoint; do not copy tokens from old conversation context.
 
 After a schema validation error, call `status` for the saved wait and new revision,
 clarify the answer if needed, and submit the correction with that revision.
+Unavailable approval checkpoints, malformed input tokens, and missing runtime
+state fail the flow; do not keep retrying them as if only the answer were invalid.
 After a revision conflict, inspect the current question and state; do not blindly
 retry the same answer against a newer checkpoint. After interruption, timeout,
 or an uncertain execution failure, inspect state and effects before doing more

@@ -93,6 +93,7 @@ type EmbeddedToolEnvelope = {
 };
 
 type EmbeddedToolRuntime = {
+  decodeResumeToken: (token: string) => unknown;
   runToolRequest: (params: {
     pipeline?: string;
     filePath?: string;
@@ -323,6 +324,12 @@ export function createEmbeddedLobsterRunner(options?: {
             signal.throwIfAborted();
             await params.beforeExecute?.();
             signal.throwIfAborted();
+            if (params.response !== undefined && token && !approvalId) {
+              // Use the runtime's decoder, not its ambiguous parse_error envelope:
+              // a malformed token is not a correctable input answer. Preserve the
+              // decoder's error so managed flows settle as failed.
+              runtime.decodeResumeToken(token);
+            }
             envelope = await runtime.resumeToolRequest({
               ...(token ? { token } : {}),
               ...(approvalId ? { approvalId } : {}),
