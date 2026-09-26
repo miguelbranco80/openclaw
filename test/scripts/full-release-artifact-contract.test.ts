@@ -397,7 +397,7 @@ function registryBudgetFixture(warningCount = 0, validationInputs: Record<string
 describe("retained publication admission", () => {
   const directories = useAutoCleanupTempDirTracker(afterEach);
 
-  it.each(["beta", "stable"])(
+  it.each(["beta", "stable", "full"])(
     "writes fresh %s performance and Telegram evidence through the actual workflow command",
     async (releaseProfile) => {
       const telegram = {
@@ -483,13 +483,12 @@ describe("retained publication admission", () => {
         ),
       );
       expect(manifest.releaseProfile).toBe(releaseProfile);
-      // Validation records advisory performance; the publisher owns strict stable gates.
       expect(manifest.controls).toMatchObject({
         stableSoakRequired: releaseProfile !== "beta",
-        performanceBlocking: false,
+        performanceBlocking: releaseProfile !== "beta",
         performanceReportPublication: "artifact-only",
       });
-      expect(manifest.childRuns.productPerformance.blocking).toBe(false);
+      expect(manifest.childRuns.productPerformance.blocking).toBe(releaseProfile !== "beta");
       expect(manifest.validationInputs).toMatchObject({
         npmTelegramPackageSpec: "openclaw@2026.9.9",
         npmTelegramProviderMode: "live-frontier",
@@ -1198,7 +1197,7 @@ describe("full release artifact contract", () => {
     return { result, bytes, context, dir, workflow, writer, steps };
   }
 
-  it.each([false, true])("writes only a full-input digest and safe context (soak=%s)", (soak) => {
+  it("writes only a full-input digest and safe context", () => {
     const privateValue = "/private/example/operator/candidate.tgz";
     const secretValue = "synthetic-private-dispatch-value";
     const shellValue = 'line one\n$(touch unexpected) "quoted"';
@@ -1207,7 +1206,7 @@ describe("full release artifact contract", () => {
         text: shellValue,
         secret: secretValue,
         package: privateValue,
-        run_release_soak: String(soak),
+        run_release_soak: "true",
         count: 3,
         empty: "",
       },
@@ -1216,7 +1215,7 @@ describe("full release artifact contract", () => {
       count: "3",
       empty: "",
       package: privateValue,
-      run_release_soak: String(soak),
+      run_release_soak: "true",
       secret: secretValue,
       text: shellValue,
     });
