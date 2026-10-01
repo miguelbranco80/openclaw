@@ -25,16 +25,16 @@ Enable it in an agent allowlist:
 ```json
 {
   "agents": {
-    "list": [
-      {
-        "id": "main",
+    "entries": {
+      "main": {
+        "default": true,
         "tools": {
           "allow": [
             "lobster" // plugin id (enables all tools from this plugin)
           ]
         }
       }
-    ]
+    }
   }
 }
 ```
@@ -58,15 +58,15 @@ Example (allow only a small set of tools):
 ```jsonc
 {
   "agents": {
-    "list": [
-      {
-        "id": "main",
+    "entries": {
+      "main": {
+        "default": true,
         "tools": {
           "allow": ["lobster", "web_fetch", "web_search", "gog", "gh"],
           "deny": ["gateway"],
         },
       },
-    ],
+    },
   },
 }
 ```
