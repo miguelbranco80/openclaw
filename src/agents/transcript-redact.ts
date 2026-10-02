@@ -70,6 +70,8 @@ const OPENAI_COMPLETIONS_APIS = new Set([
   "openclaw-openai-completions-transport",
 ]);
 const OPAQUE_REPLAY_TOKEN_RE = /^[A-Za-z0-9+/_-]+={0,2}$/;
+// Responses gateways can append one base64url routing segment to the encrypted payload.
+const DOTTED_RESPONSES_CIPHERTEXT_RE = /^[A-Za-z0-9+/_-]+={0,2}\.[A-Za-z0-9_-]+={0,2}$/;
 const GOOGLE_THOUGHT_SIGNATURE_RE =
   /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 // Transport replay fences use the two-word base-36 output from shortHash.
@@ -142,6 +144,13 @@ function isStructurallyValidOpaqueReplayToken(value: string): boolean {
     value === value.trim() &&
     OPAQUE_REPLAY_TOKEN_RE.test(value) &&
     !value.includes("\u2026")
+  );
+}
+
+function isOpenAIResponsesEncryptedContent(value: string): boolean {
+  return (
+    isStructurallyValidOpaqueReplayToken(value) ||
+    (value === value.trim() && DOTTED_RESPONSES_CIPHERTEXT_RE.test(value))
   );
 }
 
@@ -369,7 +378,7 @@ function sanitizeOpenAIReasoningSignature(
   const encryptedContent = parsed.encrypted_content;
   const hasEncryptedContent = Object.hasOwn(parsed, "encrypted_content");
   const isValidEncryptedContent = isOpenAIResponsesRoute(route)
-    ? isStructurallyValidOpaqueReplayToken
+    ? isOpenAIResponsesEncryptedContent
     : isCredentialSafeOpaqueReplayToken;
   if (
     encryptedContent !== undefined &&
