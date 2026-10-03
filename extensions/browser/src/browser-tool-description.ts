@@ -70,19 +70,11 @@ function describeBrowserTool(opts: {
   capabilities: BrowserToolCapabilities;
 }): string {
   const nodePolicy = opts.config?.gateway?.nodes?.browser;
-  const routingHint = opts.sandboxBridgeUrl?.trim()
-    ? "Default: sandbox for managed profiles. Omit target and node to use it."
-    : opts.allowHostControl === false
-      ? "No sandbox browser is available."
-      : nodePolicy?.mode !== "off" && nodePolicy?.node?.trim()
-        ? "Default: configured browser node. Omit target and node to use it. If it is unavailable, report the routing error rather than switching to host."
-        : nodePolicy?.mode === "off" || nodePolicy?.mode === "manual"
-          ? "Default: host. Omit target and node to use the host browser."
-          : "Omit target and node to use configured routing, which prefers an available host browser and can select a single connected browser node when node routing is available.";
-  const hostHint =
-    opts.allowHostControl === false
-      ? "Host and node targets are blocked by sandbox policy."
-      : 'Set target="host" only when you intend to use the Gateway host browser; it bypasses configured node routing. Select a node explicitly with target="node" or node=<id|name> when node routing is enabled.';
+  const usePinnedNode =
+    nodePolicy?.mode !== "off" &&
+    Boolean(nodePolicy?.node?.trim()) &&
+    !opts.sandboxBridgeUrl?.trim() &&
+    opts.allowHostControl !== false;
   const actions = new Set(opts.capabilities.actions);
   const evaluateEnabled = opts.capabilities.actKinds.includes("evaluate");
   const lines = [
@@ -100,7 +92,11 @@ function describeBrowserTool(opts: {
       : []),
     `For Chrome MCP existing-session profiles, omit timeoutMs on act:type, hover, scrollIntoView, drag, select, and fill; that driver rejects per-call timeout overrides for those actions.${evaluateEnabled ? " act:evaluate supports timeoutMs." : ""}`,
     ...(!opts.capabilities.tabBound
-      ? [`target selects browser location (sandbox|host|node). ${routingHint}`, hostHint]
+      ? [
+          usePinnedNode
+            ? 'Omit target and node to use the configured browser node. If it is unavailable, report the routing error rather than switching to host. Set target="host" only when you intend to use the Gateway host browser; it bypasses configured node routing.'
+            : 'Prefer the host browser; auto-route to a connected browser node only when the host has no usable browser capability. Select another location with target="node" or node=<id|name>; configured node pins also take precedence.',
+        ]
       : []),
     "When using refs from snapshot (e.g. e12), keep the same tab: prefer passing targetId from the snapshot response into subsequent actions (act/click/type/etc). For tab operations, targetId also accepts tabId handles (t1) and labels from action=tabs.",
     "For multi-step browser work, login checks, stale refs, duplicate tabs, or Google Meet flows, use the bundled browser-automation skill when it is available.",
@@ -133,6 +129,12 @@ function describeBrowserTool(opts: {
     ...(actions.has("upload")
       ? [
           "For file chooser uploads, pass the trigger ref with paths in the same upload call when available; use paths-only arming only when a later trigger is intentional. Use inputRef or element to set a file input directly.",
+        ]
+      : []),
+    ...(!opts.capabilities.tabBound
+      ? [
+          `target selects browser location (sandbox|host|node). Default: ${usePinnedNode ? "configured browser node" : opts.sandboxBridgeUrl ? "sandbox" : "host"}.`,
+          opts.allowHostControl === false ? "Host target blocked by policy." : "Host target allowed.",
         ]
       : []),
   ];

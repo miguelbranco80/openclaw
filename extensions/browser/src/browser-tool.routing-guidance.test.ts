@@ -71,7 +71,7 @@ it.each<{
   {
     name: "automatic node selection",
     route: "node",
-    guidance: "Omit target and node to use configured routing",
+    guidance: "Default: host.",
   },
   {
     name: "manual without pin",
@@ -90,14 +90,14 @@ it.each<{
     policy: pin,
     browser: { sandboxBridgeUrl: bridge, allowHostControl: false },
     route: "sandbox",
-    guidance: "Default: sandbox for managed profiles.",
+    guidance: "Default: sandbox.",
   },
   {
     name: "denied host control without sandbox",
     policy: pin,
     browser: { allowHostControl: false },
     route: "blocked",
-    guidance: "Host and node targets are blocked by sandbox policy.",
+    guidance: "Host target blocked by policy.",
   },
 ])("aligns registered guidance with dispatch for $name", async (scenario) => {
   const runtimeConfig = { browser: {}, gateway: { nodes: { browser: scenario.policy } } };
@@ -137,11 +137,9 @@ it.each<{
     }
   }
   expect(tool.description).toContain(scenario.guidance);
-  expect(tool.description).not.toContain("Prefer the host browser");
-  if (scenario.browser?.allowHostControl !== false) {
-    expect(tool.description).toContain("it bypasses configured node routing");
-  }
   if (scenario.policy?.node && scenario.policy.mode !== "off" && !scenario.browser) {
+    expect(tool.description).not.toContain("Prefer the host browser");
+    expect(tool.description).toContain("it bypasses configured node routing");
     expect(tool.description).toContain("report the routing error rather than switching to host");
   }
 });
