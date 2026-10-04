@@ -134,7 +134,9 @@ function describeBrowserTool(opts: {
     ...(!opts.capabilities.tabBound
       ? [
           `target selects browser location (sandbox|host|node). Default: ${usePinnedNode ? "configured browser node" : opts.sandboxBridgeUrl ? "sandbox" : "host"}.`,
-          opts.allowHostControl === false ? "Host target blocked by policy." : "Host target allowed.",
+          opts.allowHostControl === false
+            ? "Host target blocked by policy."
+            : "Host target allowed.",
         ]
       : []),
   ];
